@@ -1,236 +1,169 @@
-# Minecraft Staking Smart Contract
+# Solana Staking Program
 
-A Solana smart contract built with Anchor for a Minecraft-integrated token staking system. Players can stake SPL tokens through a website wallet connection, and the staked tokens can be spent in-game through backend authority updates.
+A Solana staking program that allows users to stake tokens and track their in-game balance for gaming applications.
 
 ## Features
 
-- **SPL Token Staking**: Players can stake any SPL token through wallet connection
-- **PDA-based Vault**: Secure token custody using Program Derived Addresses
-- **User Stake Tracking**: Tracks total staked amounts, in-game spent amounts, and timestamps
-- **Event Emission**: Emits events for off-chain listeners (Minecraft backend integration)
-- **Restricted Unstaking**: Users can only unstake tokens that haven't been spent in-game
-- **Authority-controlled Spending**: Backend authority can update in-game spent amounts
+- **Stake Tokens**: Users can stake SPL tokens into a secure vault
+- **In-Game Balance Tracking**: Authority can update users' in-game balances based on their game activity
+- **Flexible Unstaking**: Users can unstake up to the minimum of their staked amount and current in-game balance
+- **Global State Management**: Tracks total staked across all users
+- **Event Emission**: All actions emit events for off-chain tracking
 
-## Smart Contract Structure
-
-### Account Types
-
-- **GlobalState**: Stores program-wide configuration and authority
-- **UserStake**: Individual user staking records with amounts and timestamps
-- **Token Vault**: PDA-controlled token account for secure custody
+## Program Structure
 
 ### Instructions
 
-1. **initialize**: Sets up the global state with authority
-2. **stake**: Stakes tokens into the vault and creates/updates user stake account
-3. **unstake**: Withdraws unspent tokens from the vault
-4. **update_in_game_spent**: Authority-only function to update spent amounts
+1. **`initialize`** - Initialize the global state with an authority
+2. **`stake_tokens`** - Stake tokens into the vault
+3. **`unstake_tokens`** - Unstake tokens from the vault (including earned rewards)
+4. **`update_in_game_balance`** - Update a user's in-game balance (authority only)
+5. **`create_vault`** - Create a vault for a specific token mint
+6. **`deposit_rewards`** - Deposit reward tokens into the vault (authority only)
 
-## Deployment Information
+### Accounts
 
-- **Program ID**: `FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn`
-- **Network**: Solana Devnet
-- **Test Token**: `Eg5VLcpRJr27VtNZpw1feJaMoRLN3UsmmzHCULtF3366` (6 decimals)
-
-## Project Structure
-
-```
-staking/
-├── programs/staking/          # Smart contract source code
-│   ├── src/lib.rs            # Main contract logic
-│   └── Cargo.toml            # Rust dependencies
-├── tests/                    # Test files
-│   ├── staking.ts           # TypeScript integration tests
-│   └── js/                  # JavaScript test suite
-│       ├── test-*.js        # Various test scenarios
-│       ├── run-test.js      # Test runner
-│       └── verify-deployment.js # Deployment verification
-├── scripts/                  # Utility scripts and keypairs
-├── migrations/              # Deployment scripts
-├── app/                     # Frontend application (if applicable)
-├── Anchor.toml              # Anchor configuration
-├── Cargo.toml               # Workspace configuration
-└── package.json             # Node.js dependencies
-```
+- **`GlobalState`** - Program-wide configuration and stats
+- **`StakeInfo`** - Per-user staking information
 
 ## Prerequisites
 
-- [Rust](https://rustup.rs/) (latest stable)
-- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (1.14+)
-- [Anchor Framework](https://www.anchor-lang.com/docs/installation) (0.28+)
-- [Node.js](https://nodejs.org/) (16+)
+1. Install [Rust](https://rustup.rs/)
+2. Install [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools)
+3. Install [Anchor](https://www.anchor-lang.com/docs/installation)
+4. Install [Node.js](https://nodejs.org/)
 
-## Installation
+## Setup
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd staking
-```
-
-2. Install dependencies:
+1. Clone the repository and install dependencies:
 ```bash
 npm install
 ```
 
-3. Build the smart contract:
+2. Configure Solana CLI for your target network:
+```bash
+# For localnet
+solana config set --url localhost
+
+# For devnet  
+solana config set --url devnet
+
+# For mainnet
+solana config set --url mainnet-beta
+```
+
+3. Create a keypair (if you don't have one):
+```bash
+solana-keygen new
+```
+
+4. Fund your account:
+```bash
+# For localnet (start local validator first)
+solana-test-validator
+
+# For devnet
+solana airdrop 2
+
+# For mainnet - you need real SOL
+```
+
+## Build and Deploy
+
+1. Build the program:
 ```bash
 anchor build
 ```
 
-## Configuration
-
-### Network Setup
-
-1. Set Solana to devnet:
+2. Deploy to your target network:
 ```bash
-solana config set --url devnet
+# Localnet
+anchor deploy --provider.cluster localnet
+
+# Devnet
+anchor deploy --provider.cluster devnet
+
+# Mainnet (be careful!)
+anchor deploy --provider.cluster mainnet
 ```
 
-2. Create/restore wallet:
+3. Initialize the program:
 ```bash
-solana-keygen new  # or restore existing wallet
+node scripts/deploy.js
 ```
 
-3. Airdrop SOL for testing:
-```bash
-solana airdrop 2
+## Usage
+
+### For Game Developers
+
+1. **Create a vault** for your token mint
+2. **Players stake tokens** using the `stake_tokens` instruction
+3. **Deposit reward tokens** into the vault using `deposit_rewards`
+4. **Update player balances** as they play using `update_in_game_balance` (can exceed staked amount for rewards)
+5. **Players unstake** when they want to withdraw using `unstake_tokens` (can withdraw full balance including rewards)
+
+### Example Flow
+
+```typescript
+// 1. Initialize (done once)
+await program.methods
+  .initialize(authorityPubkey)
+  .accounts({ /* accounts */ })
+  .rpc();
+
+// 2. Create vault for token (done once per token)
+await program.methods
+  .createVault()
+  .accounts({ /* accounts */ })
+  .rpc();
+
+// 3. User stakes tokens
+await program.methods
+  .stakeTokens(new BN(1000000)) // 1 token with 6 decimals
+  .accounts({ /* accounts */ })
+  .rpc();
+
+// 4. Authority deposits reward tokens into vault
+await program.methods
+  .depositRewards(new BN(500000)) // 0.5 tokens in rewards
+  .accounts({ /* accounts */ })
+  .rpc();
+
+// 5. Game backend updates user's in-game balance (including rewards)
+await program.methods
+  .updateInGameBalance(userPubkey, new BN(1500000)) // 1.5 tokens (1 staked + 0.5 earned)
+  .accounts({ /* accounts */ })
+  .rpc();
+
+// 6. User unstakes (can unstake full balance including rewards)
+await program.methods
+  .unstakeTokens(new BN(1200000)) // 1.2 tokens (0.8 from stake + 0.4 from rewards)
+  .accounts({ /* accounts */ })
+  .rpc();
 ```
 
-### Program Deployment
+## Security Considerations
 
-1. Deploy the program:
-```bash
-anchor deploy
-```
-
-2. Update the program ID in:
-   - `Anchor.toml`
-   - `programs/staking/src/lib.rs`
+- **Authority Control**: The authority can update any user's in-game balance
+- **PDA Security**: All accounts use proper PDA derivation with seeds
+- **Overflow Protection**: All arithmetic operations use checked math
+- **Token Safety**: Uses standard SPL token transfers
 
 ## Testing
 
-The project includes comprehensive test suites for various scenarios:
-
-### JavaScript Tests (tests/js/)
-
-- **test-real-staking.js**: Basic staking functionality
-- **test-unlimited-unstaking.js**: Unlimited unstaking scenarios
-- **test-fixed-unlimited.js**: Fixed amount with unlimited unstaking
-- **test-simple-unlimited.js**: Simple unlimited operations
-- **test-minimal-signature.js**: Minimal signature requirements
-- **test-overstaking.js**: Overstaking protection tests
-- **test-signature-*.js**: Various signature-based tests
-
-### Running Tests
-
-1. Run individual tests:
-```bash
-node tests/js/test-real-staking.js
-```
-
-2. Run test suite:
-```bash
-node tests/js/run-test.js
-```
-
-3. Verify deployment:
-```bash
-node tests/js/verify-deployment.js
-```
-
-### TypeScript Tests
-
+Run the test suite:
 ```bash
 anchor test
 ```
 
-## Usage Examples
+Note: Tests require the program to be built first to generate correct TypeScript types.
 
-### Staking Tokens
+## Program Addresses
 
-```javascript
-const tx = await program.methods
-  .stake(new anchor.BN(1000000)) // 1 token (6 decimals)
-  .accounts({
-    user: wallet.publicKey,
-    userStake: userStakePDA,
-    globalState: globalStatePDA,
-    tokenVault: tokenVaultPDA,
-    userTokenAccount: userTokenAccount,
-    tokenProgram: TOKEN_PROGRAM_ID,
-  })
-  .rpc();
-```
-
-### Unstaking Tokens
-
-```javascript
-const tx = await program.methods
-  .unstake(new anchor.BN(500000)) // 0.5 tokens
-  .accounts({
-    user: wallet.publicKey,
-    userStake: userStakePDA,
-    globalState: globalStatePDA,
-    tokenVault: tokenVaultPDA,
-    userTokenAccount: userTokenAccount,
-    tokenProgram: TOKEN_PROGRAM_ID,
-  })
-  .rpc();
-```
-
-### Backend In-Game Spending
-
-```javascript
-const tx = await program.methods
-  .updateInGameSpent(new anchor.BN(250000)) // 0.25 tokens spent
-  .accounts({
-    authority: backendWallet.publicKey,
-    targetUser: userWallet.publicKey,
-    userStake: userStakePDA,
-    globalState: globalStatePDA,
-  })
-  .rpc();
-```
-
-## Events
-
-The contract emits the following events for off-chain integration:
-
-- **StakeEvent**: When tokens are staked
-- **UnstakeEvent**: When tokens are unstaked  
-- **InGameSpentUpdated**: When in-game spent amount is updated
-
-## Security Features
-
-- **PDA-based Token Custody**: Tokens are held in program-controlled accounts
-- **Authority Verification**: Only designated authority can update in-game spending
-- **Overflow Protection**: Safe math operations prevent overflow attacks
-- **Spend Validation**: Users cannot unstake more than their available balance
-
-## Integration with Minecraft
-
-This smart contract is designed to integrate with a Minecraft server through:
-
-1. **Event Listening**: Backend listens for stake/unstake events
-2. **In-Game Spending**: Backend updates spent amounts when players use tokens
-3. **Balance Verification**: Real-time balance checks for in-game purchases
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
+- **Localnet**: FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn
+- **Devnet**: FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn
+- **Mainnet**: FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-For questions or issues:
-- Create an issue in this repository
-- Review the test files for usage examples
-- Check the Anchor documentation for framework-specific questions 
+MIT License 

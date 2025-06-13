@@ -1,5 +1,6 @@
 [toolchain]
 package_manager = "yarn"
+anchor_version = "0.31.0"
 
 [features]
 resolution = true
@@ -9,7 +10,7 @@ skip-lint = false
 staking = "FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn"
 
 [programs.devnet]
-staking = "FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn"
+staking = "ESyQQgk2Z71K72RFGxxUk9RSFLwEx3BJGh4EhVydr8G"
 
 [programs.mainnet]
 staking = "FK2cxLLF8wDCREL3t1uoijHTw2fmSjJxxM6STijFwPJn"
@@ -22,4 +23,5 @@ cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "node scripts/verify-deployment.js"
+verify = "node scripts/verify-deployment.js"

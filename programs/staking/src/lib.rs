@@ -34,23 +34,22 @@ pub mod staking {
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
         token::transfer(cpi_ctx, amount)?;
 
-        // Initialize stake info if this is the first stake
+        // if first stake
         if ctx.accounts.stake_info.owner == Pubkey::default() {
             ctx.accounts.stake_info.owner = ctx.accounts.user.key();
             ctx.accounts.stake_info.mint = ctx.accounts.mint.key();
             ctx.accounts.stake_info.vault_bump = ctx.bumps.vault_authority;
-            ctx.accounts.stake_info.in_game_spent = 0;
+            ctx.accounts.stake_info.in_game_balance = 0;
         }
         
-        // Update user stake info
+        // update stake info
         ctx.accounts.stake_info.total_staked = ctx.accounts.stake_info.total_staked
             .checked_add(amount)
             .ok_or(ErrorCode::Overflow)?;
         
-        // Update timestamp
         ctx.accounts.stake_info.last_update = Clock::get()?.unix_timestamp;
         
-        // Update global state
+        // update global state
         ctx.accounts.global_state.total_staked = ctx.accounts.global_state.total_staked
             .checked_add(amount)
             .ok_or(ErrorCode::Overflow)?;
@@ -68,24 +67,30 @@ pub mod staking {
     pub fn unstake_tokens(ctx: Context<Unstake>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
         
-        let available_to_unstake = ctx.accounts.stake_info.total_staked
-            .checked_sub(ctx.accounts.stake_info.in_game_spent)
-            .ok_or(ErrorCode::InsufficientStaked)?;
-            
+        // allow unstake up to in-game balance
         require!(
-            available_to_unstake >= amount,
-            ErrorCode::InsufficientStaked
+            ctx.accounts.stake_info.in_game_balance >= amount,
+            ErrorCode::InsufficientBalance
         );
 
-        // Update stake info first
+        // calc how much of the unstake comes from original stake vs rewards
+        let staked_portion = std::cmp::min(amount, ctx.accounts.stake_info.total_staked);
+        
+        // Update stake info - only reduce total_staked by the portion that was originally staked
         ctx.accounts.stake_info.total_staked = ctx.accounts.stake_info.total_staked
-            .checked_sub(amount)
+            .checked_sub(staked_portion)
             .ok_or(ErrorCode::InsufficientStaked)?;
+        
+        // Reduce in-game balance by full unstake amount (including rewards)
+        ctx.accounts.stake_info.in_game_balance = ctx.accounts.stake_info.in_game_balance
+            .checked_sub(amount)
+            .ok_or(ErrorCode::InsufficientBalance)?;
+            
         ctx.accounts.stake_info.last_update = Clock::get()?.unix_timestamp;
 
-        // Update global state
+        // Only reduce global total_staked by the portion that was originally staked
         ctx.accounts.global_state.total_staked = ctx.accounts.global_state.total_staked
-            .checked_sub(amount)
+            .checked_sub(staked_portion)
             .ok_or(ErrorCode::InsufficientStaked)?;
 
         // Transfer tokens
@@ -104,6 +109,8 @@ pub mod staking {
         emit!(UnstakeEvent {
             user: ctx.accounts.user.key(),
             amount,
+            staked_portion,
+            reward_portion: amount.checked_sub(staked_portion).unwrap_or(0),
             remaining_staked: ctx.accounts.stake_info.total_staked,
             timestamp: Clock::get()?.unix_timestamp,
         });
@@ -111,7 +118,45 @@ pub mod staking {
         Ok(())
     }
 
-    pub fn update_in_game_spent(ctx: Context<UpdateInGameSpent>, user: Pubkey, amount: u64) -> Result<()> {
+    pub fn update_in_game_balance(ctx: Context<UpdateInGameBalance>, user: Pubkey, new_balance: u64) -> Result<()> {
+        // Verify authority
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.global_state.authority,
+            ErrorCode::UnauthorizedAuthority
+        );
+
+        // Verify the user parameter matches the stake info owner
+        require!(
+            user == ctx.accounts.user_stake.owner,
+            ErrorCode::InvalidUser
+        );
+
+        // Set the new in-game balance
+        ctx.accounts.user_stake.in_game_balance = new_balance;
+        ctx.accounts.user_stake.last_update = Clock::get()?.unix_timestamp;
+
+        emit!(InGameBalanceUpdated {
+            user,
+            new_balance,
+            total_staked: ctx.accounts.user_stake.total_staked,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    pub fn create_vault(ctx: Context<CreateVault>) -> Result<()> {
+        // Vault token account is created through the constraints
+        emit!(VaultCreated {
+            mint: ctx.accounts.mint.key(),
+            vault: ctx.accounts.vault_account.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        
+        Ok(())
+    }
+
+    pub fn deposit_rewards(ctx: Context<DepositRewards>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
         
         // Verify authority
@@ -120,31 +165,24 @@ pub mod staking {
             ErrorCode::UnauthorizedAuthority
         );
 
-        // Update in-game spent amount
-        ctx.accounts.user_stake.in_game_spent = ctx.accounts.user_stake.in_game_spent
-            .checked_add(amount)
-            .ok_or(ErrorCode::Overflow)?;
-            
-        // Ensure in-game spent doesn't exceed total staked
-        require!(
-            ctx.accounts.user_stake.in_game_spent <= ctx.accounts.user_stake.total_staked,
-            ErrorCode::ExceedsStakedAmount
-        );
-        
-        ctx.accounts.user_stake.last_update = Clock::get()?.unix_timestamp;
+        // Transfer reward tokens from authority to vault
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.authority_token_account.to_account_info(),
+            to: ctx.accounts.vault_account.to_account_info(),
+            authority: ctx.accounts.authority.to_account_info(),
+        };
 
-        emit!(InGameSpentUpdated {
-            user,
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
+        emit!(RewardsDeposited {
+            authority: ctx.accounts.authority.key(),
             amount,
-            total_spent: ctx.accounts.user_stake.in_game_spent,
             timestamp: Clock::get()?.unix_timestamp,
         });
 
         Ok(())
     }
-
-    // TODO: Implement proper signature verification for backend-authorized unstaking
-    // This would require cryptographic signature validation
 }
 
 #[derive(Accounts)]
@@ -262,10 +300,8 @@ pub struct Unstake<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-
-
 #[derive(Accounts)]
-pub struct UpdateInGameSpent<'info> {
+pub struct UpdateInGameBalance<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -283,6 +319,69 @@ pub struct UpdateInGameSpent<'info> {
     pub global_state: Account<'info, GlobalState>,
 }
 
+#[derive(Accounts)]
+pub struct CreateVault<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = payer,
+        token::mint = mint,
+        token::authority = vault_authority
+    )]
+    pub vault_account: Account<'info, TokenAccount>,
+
+    /// CHECK: vault authority PDA
+    #[account(
+        seeds = [b"vault", mint.key().as_ref()],
+        bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DepositRewards<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = authority
+    )]
+    pub authority_token_account: Account<'info, TokenAccount>,
+
+    pub mint: Account<'info, Mint>,
+
+    /// CHECK: vault authority PDA
+    #[account(
+        seeds = [b"vault", mint.key().as_ref()],
+        bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = vault_authority
+    )]
+    pub vault_account: Account<'info, TokenAccount>,
+
+    #[account(
+        seeds = [b"global_state"],
+        bump = global_state.bump
+    )]
+    pub global_state: Account<'info, GlobalState>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct GlobalState {
@@ -297,7 +396,7 @@ pub struct StakeInfo {
     pub owner: Pubkey,
     pub mint: Pubkey,
     pub total_staked: u64,
-    pub in_game_spent: u64,
+    pub in_game_balance: u64,
     pub vault_bump: u8,
     pub last_update: i64,
 }
@@ -321,15 +420,31 @@ pub struct StakeEvent {
 pub struct UnstakeEvent {
     pub user: Pubkey,
     pub amount: u64,
+    pub staked_portion: u64,
+    pub reward_portion: u64,
     pub remaining_staked: u64,
     pub timestamp: i64,
 }
 
 #[event]
-pub struct InGameSpentUpdated {
+pub struct InGameBalanceUpdated {
     pub user: Pubkey,
+    pub new_balance: u64,
+    pub total_staked: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct VaultCreated {
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct RewardsDeposited {
+    pub authority: Pubkey,
     pub amount: u64,
-    pub total_spent: u64,
     pub timestamp: i64,
 }
 
@@ -337,8 +452,6 @@ pub struct InGameSpentUpdated {
 pub enum ErrorCode {
     #[msg("Not enough tokens staked to unstake that amount.")]
     InsufficientStaked,
-
-
 
     #[msg("Invalid amount.")]
     InvalidAmount,
@@ -349,6 +462,9 @@ pub enum ErrorCode {
     #[msg("Unauthorized authority.")]
     UnauthorizedAuthority,
 
-    #[msg("Exceeds staked amount.")]
-    ExceedsStakedAmount,
+    #[msg("Insufficient balance.")]
+    InsufficientBalance,
+
+    #[msg("Invalid user.")]
+    InvalidUser,
 }
